@@ -26,7 +26,7 @@ from pprint import pprint
 import slackweb
 # slack web hook for notifying training progress log. 
 slack = slackweb.Slack(url=os.environ['TRAINING_SLACK_NOTI_URL'])
-header= "snli" # description for this training. 
+header= "encoder_decoder_simple" # description for this training. 
  
 
 
@@ -34,7 +34,8 @@ flags = tf.app.flags
 
 
 # Names and directories
-flags.DEFINE_string("data_dir", "../data/snli_simple", "Data dir [../data/snli_simple]")
+# flags.DEFINE_string("data_dir", "../data/snli_simple", "Data dir [../data/snli_simple]")
+flags.DEFINE_string("data_dir", "tiny", "Data dir [../data/snli_simple]") # sanity check with tiny dataset.
 flags.DEFINE_string("model_name", "basic", "Model name [basic]")
 flags.DEFINE_string("run_id", "0", "Run ID [0]")
 flags.DEFINE_string("out_base_dir", "out", "out base dir [out]")
@@ -61,7 +62,7 @@ flags.DEFINE_float("th", 0.5, "Threshold [0.5]")
 
 
 # Training / test parameters
-flags.DEFINE_integer("batch_size", 1000, "Batch size [1000]")
+flags.DEFINE_integer("batch_size", 1, "Batch size [1000]")
 flags.DEFINE_integer("val_num_batches", 0, "validation num batches [0]. "+ \
     "Use non-zero value to run evaluation on subset of the validation set.")
 flags.DEFINE_integer("test_num_batches", 0, "test num batches [0]")
@@ -78,7 +79,7 @@ flags.DEFINE_integer("char_emb_size", 8, "Char emb size [8]")
 flags.DEFINE_string("out_channel_dims", "100", "Out channel dims of Char-CNN, separated by commas [100]")
 flags.DEFINE_string("filter_heights", "5", "Filter heights of Char-CNN, separated by commas [5]")
 flags.DEFINE_bool("finetune", False, "Finetune word embeddings? [False]")
-flags.DEFINE_bool("highway", True, "Use highway? [True]")
+flags.DEFINE_bool("highway", False, "Use highway? [True]")
 flags.DEFINE_integer("highway_num_layers", 2, "highway num layers [2]")
 flags.DEFINE_bool("share_cnn_weights", True, "Share Char-CNN weights [True]")
 flags.DEFINE_bool("share_lstm_weights", True, "Share pre-processing (phrase-level) LSTM weights [True]")
@@ -92,7 +93,7 @@ flags.DEFINE_bool("cpu_opt", False, "CPU optimization? GPU computation can be sl
 # Logging and saving options
 flags.DEFINE_boolean("progress", True, "Show progress? [True]")
 flags.DEFINE_integer("log_period", 100, "Log period [100]")
-flags.DEFINE_integer("eval_period", 1000, "Eval period [1000]")
+flags.DEFINE_integer("eval_period", 100, "Eval period [1000]")
 flags.DEFINE_integer("save_period", 1000, "Save Period [1000]")
 flags.DEFINE_integer("max_to_keep", 20, "Max recent saves to keep [20]")
 flags.DEFINE_bool("dump_eval", True, "dump eval? [True]")
@@ -119,7 +120,7 @@ flags.DEFINE_string("answer_func", "linear", "answer logit func [linear]")
 flags.DEFINE_string("sh_logit_func", "tri_linear", "sh logit func [tri_linear]")
 
 # Ablation options
-flags.DEFINE_bool("use_char_emb", True, "use char emb? [True]")
+flags.DEFINE_bool("use_char_emb", False, "use char emb? [True]")
 flags.DEFINE_bool("use_word_emb", True, "use word embedding? [True]")
 flags.DEFINE_bool("q2c_att", True, "question-to-context attention? [True]")
 flags.DEFINE_bool("c2q_att", True, "context-to-question attention? [True]")
@@ -174,6 +175,7 @@ def main(_):
 
 
 def _train(config):
+    np.set_printoptions(threshold=np.inf)
     train_data = read_data(config, 'train', config.load)
     dev_data = read_data(config, 'dev', True)
     update_config(config, [train_data, dev_data])
@@ -187,6 +189,30 @@ def _train(config):
                         else np.random.multivariate_normal(np.zeros(config.word_emb_size), np.eye(config.word_emb_size))
                         for idx in range(config.word_vocab_size)])
     config.emb_mat = emb_mat
+
+
+    def make_idx2word():
+        """
+        return index of the word from the preprocessed dictionary. 
+        """
+        idx2word = {}
+        d = train_data.shared['word2idx']
+        for word, idx in d.items():
+            print(word)
+            idx2word[idx] = word
+        if config.use_glove_for_unk:
+            d2 = train_data.shared['new_word2idx']
+            for word, idx in d2.items():
+                print(word)
+                idx2word[idx+len(d)] = word
+        return idx2word
+
+
+    idx2word = make_idx2word()
+    # Save total number of words used in this dictionary: words in GloVe + etc tokens(including UNK, POS, ... etc)
+    print("size of config.id2word len:", len(idx2word))
+    print("size of config.total_word_vocab_size:", config.total_word_vocab_size)
+
 
     # construct model graph and variables (using default graph)
     pprint(config.__flags, indent=2)
@@ -213,8 +239,7 @@ def _train(config):
                                                      num_steps=num_steps, shuffle=True, cluster=config.cluster), total=num_steps):
         global_step = sess.run(model.global_step) + 1  # +1 because all calculations are done after step
         get_summary = global_step % config.log_period == 0
-        loss, summary, train_op = trainer.step(sess, batches, get_summary=get_summary)
-        print("train loss:", loss)
+        loss, summary, train_op = trainer.step(sess, batches, get_summary=get_summary)        
         if get_summary:
             graph_handler.add_summary(summary, global_step)
 
@@ -246,12 +271,11 @@ def _train(config):
             e_dev = evaluator.get_evaluation_from_batches(
                 sess, tqdm(dev_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps), total=num_steps))
             graph_handler.add_summaries(e_dev.summaries, global_step)
-            print("%s e_train: acc=%.2f loss=%.4f" % (header, e_train.acc, e_train.loss))
-            print("%s e_dev: acc=%.2f loss=%.4f" % (header, e_dev.acc, e_dev.loss))
+            print("%s e_train: loss=%.4f" % (header, e_train.loss))
+            print("%s e_dev: loss=%.4f" % (header, e_dev.loss))
             print()
-            if min_val['acc'] < e_dev.acc:
+            if min_val['loss'] > e_dev.loss:
                 min_val['loss'] = e_dev.loss
-                min_val['acc'] = e_dev.acc
                 min_val['step'] = global_step
                 min_val['patience'] = 0
             else:
@@ -260,14 +284,16 @@ def _train(config):
                     slack.notify(text="%s patience reached %d. early stopping." % (header, min_val['patience']))
                     break
 
-            slack.notify(text="%s e_dev: acc=%.2f loss=%.4f" % (header, e_dev.acc, e_dev.loss))
+            slack.notify(text="%s e_dev: loss=%.4f" % (header, e_dev.loss))
 
             if config.dump_eval:
                 graph_handler.dump_eval(e_dev)
             if config.dump_answer:
                 graph_handler.dump_answer(e_dev)
+        
+        
     
-    slack.notify(text="%s <@U024BE7LH|insikk> Train is finished. e_dev: acc=%.2f loss=%.4f at step=%d\nPlease assign another task to get more research result" % (header, min_val['acc'], min_val['loss'], min_val['step']))    
+    slack.notify(text="%s <@U024BE7LH|insikk> Train is finished. e_dev: loss=%.4f at step=%d\nPlease assign another task to get more research result" % (header, min_val['loss'], min_val['step']))    
      
     if global_step % config.save_period != 0:
         graph_handler.save(sess, global_step=global_step)

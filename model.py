@@ -2,16 +2,19 @@ import random
 
 import itertools
 import numpy as np
+
 import tensorflow as tf
-
-from read_data import DataSet
-
-from tensorflow.contrib.rnn import BasicLSTMCell
+import tensorflow.contrib.seq2seq as seq2seq
+from tensorflow.contrib.rnn import LSTMCell
 from tensorflow.python.ops.rnn import dynamic_rnn
+from tensorflow.python.layers.core import Dense
 
 from mytensorflow import get_initializer
 from rnn import get_last_relevant_rnn_output, get_sequence_length
 from nn import multi_conv1d, highway_network
+
+from read_data import DataSet
+
 
 
 def get_multi_gpu_models(config):
@@ -26,9 +29,7 @@ def get_multi_gpu_models(config):
 
 class Model(object):
 
-    PAD = 0
-    EOS = 1
-
+    # this index definition should be consistent with its definition of index in read_data.py's read_data() function.
 
     def __init__(self, config, scope, rep=True):
         self.scope = scope
@@ -40,15 +41,21 @@ class Model(object):
             config.batch_size, config.max_sent_size, \
             config.word_vocab_size, config.char_vocab_size, config.max_word_size
 
+
+        self.vocab_size = config.total_word_vocab_size
+        print("In model vocab size:", config.total_word_vocab_size)
+
         # Encoder input
         self.x = tf.placeholder('int32', [N, None], name='x')
         self.cx = tf.placeholder('int32', [N, None, W], name='cx')
         self.x_mask = tf.placeholder('bool', [N, None], name='x_mask')
+        self.x_length = tf.placeholder('int32', [N], name='x_length')
 
         # Decoder target
         self.y = tf.placeholder('int32', [N, None], name='y')
         self.cy = tf.placeholder('int32', [N, None, W], name='cy')
         self.y_mask = tf.placeholder('bool', [N, None], name='y_mask')
+        self.y_length = tf.placeholder('int32', [N], name='y_length')
 
         self.is_train = tf.placeholder('bool', [], name='is_train')
 
@@ -83,38 +90,12 @@ class Model(object):
             config.batch_size, config.max_sent_size, \
             config.word_vocab_size, config.char_vocab_size, \
             config.hidden_size, config.max_word_size        
-        dc, dw, dco = config.char_emb_size, config.word_emb_size, config.char_out_size
+        dc, dw, dco = config.char_emb_size, config.word_emb_size, config.char_out_size        
 
-        # Prepare encoder input, and decoder target by appending EOS and PAD
 
-        # [COMPLETE]
 
-        # xx is the preocessed encoder input, 
-        # yy should be derived from xx. 
-
-        # Getting word vector        
+        # Getting word vector. For now, we only care about word_emb. Forget about char_emb.         
         with tf.variable_scope("emb"):
-            if config.use_char_emb:
-                with tf.variable_scope("emb_var"), tf.device("/cpu:0"):
-                    char_emb_mat = tf.get_variable("char_emb_mat", shape=[VC, dc], dtype='float')
-
-                with tf.variable_scope("char"):
-                    Acx = tf.nn.embedding_lookup(char_emb_mat, self.cx)  # [N, JX, W, dc]
-                    Acy = tf.nn.embedding_lookup(char_emb_mat, self.cy)  # [N, JX, W, dc]
-
-                    filter_sizes = list(map(int, config.out_channel_dims.split(',')))
-                    heights = list(map(int, config.filter_heights.split(',')))
-                    assert sum(filter_sizes) == dco, (filter_sizes, dco)
-                    with tf.variable_scope("conv"):
-                        xx = multi_conv1d(Acx, filter_sizes, heights, "VALID",  self.is_train, config.keep_prob, scope="xx")
-                        if config.share_cnn_weights:
-                            tf.get_variable_scope().reuse_variables()
-                            yy = multi_conv1d(Acy, filter_sizes, heights, "VALID", self.is_train, config.keep_prob, scope="xx")
-                        else:
-                            yy = multi_conv1d(Acy, filter_sizes, heights, "VALID", self.is_train, config.keep_prob, scope="yy")
-                        xx = tf.reshape(xx, [-1, JX, dco])
-                        yy = tf.reshape(yy, [-1, JX, dco])
-
             if config.use_word_emb:
                 with tf.variable_scope("emb_var"), tf.device("/cpu:0"):
                     if config.mode == 'train':
@@ -126,48 +107,14 @@ class Model(object):
 
                 with tf.name_scope("word"):
                     Ax = tf.nn.embedding_lookup(word_emb_mat, self.x)  # [N, JX, d]
-                    Ay = tf.nn.embedding_lookup(word_emb_mat, self.y)  # [N, JX, d]
+                    Ay = tf.nn.embedding_lookup(word_emb_mat, self.x)  # [N, JX, d]
                     self.tensor_dict['x'] = Ax
                     self.tensor_dict['y'] = Ay
-                if config.use_char_emb:
-                    xx = tf.concat(axis=2, values=[xx, Ax])  # [N, M, JX, di]
-                    yy = tf.concat(axis=2, values=[yy, Ay])  # [N, JQ, di]
-                else:
                     xx = Ax
                     yy = Ay
 
-        """
-        During training, `decoder_targets`
-        and decoder logits. This means that their shapes should be compatible.
-        Here we do a bit of plumbing to set this up.
-        """
-        with tf.name_scope('DecoderTrainFeeds'):
-            sequence_size, batch_size = tf.unstack(tf.shape(self.y))
-
-            EOS_SLICE = tf.ones([1, batch_size], dtype=tf.int32) * self.EOS
-            PAD_SLICE = tf.ones([1, batch_size], dtype=tf.int32) * self.PAD
-
-            self.decoder_train_inputs = tf.concat([EOS_SLICE, self.y], axis=0)
-            self.decoder_train_length = self.decoder_targets_length + 1
-
-            decoder_train_targets = tf.concat([self.decoder_targets, PAD_SLICE], axis=0)
-            decoder_train_targets_seq_len, _ = tf.unstack(tf.shape(decoder_train_targets))
-            decoder_train_targets_eos_mask = tf.one_hot(self.decoder_train_length - 1,
-                                                        decoder_train_targets_seq_len,
-                                                        on_value=self.EOS, off_value=self.PAD,
-                                                        dtype=tf.int32)
-            decoder_train_targets_eos_mask = tf.transpose(decoder_train_targets_eos_mask, [1, 0])
-
-            # hacky way using one_hot to put EOS symbol at the end of target sequence
-            decoder_train_targets = tf.add(decoder_train_targets,
-                                           decoder_train_targets_eos_mask)
-
-            self.decoder_train_targets = decoder_train_targets
-
-            self.loss_weights = tf.ones([
-                batch_size,
-                tf.reduce_max(self.decoder_train_length)
-            ], dtype=tf.float32, name="loss_weights")
+        # xx is the preocessed encoder input, 
+        # yy should be derived from xx. 
 
 
         # highway network
@@ -177,161 +124,96 @@ class Model(object):
                 tf.get_variable_scope().reuse_variables()
                 yy = highway_network(yy, config.highway_num_layers, True, wd=config.wd, is_train=self.is_train)
 
+
+
         self.tensor_dict['xx'] = xx
         self.tensor_dict['yy'] = yy
 
-
         self.encoder_inputs_embedded = xx
+
         self.decoder_train_inputs_embedded = yy
-
-        with tf.variable_scope("encode_x"):
-            self.fwd_lstm = BasicLSTMCell(self.h_dim, state_is_tuple=True)
-            self.x_output, self.x_state = dynamic_rnn(cell=self.fwd_lstm, inputs=xx, dtype=tf.float32)
-            # self.x_output, self.x_state = bidirectional_dynamic_rnn(cell_fw=self.fwd_lstm,cell_bw=self.bwd_lstm,inputs=self.x_emb,dtype=tf.float32)
-            # print(self.x_output)
-        with tf.variable_scope("encode_y"):
-            self.fwd_lstm = BasicLSTMCell(self.h_dim, state_is_tuple=True)
-            self.y_output, self.y_state = dynamic_rnn(cell=self.fwd_lstm, inputs=yy,
-                                                            initial_state=self.x_state, dtype=tf.float32)
-            # print self.y_output
-            # print self.y_state
-        
-        length = get_sequence_length(self.y_output)
-        self.Y = get_last_relevant_rnn_output(self.y_output, length)
-
-        self.hstar = self.Y
-
-        self.W_pred = tf.get_variable("W_pred", shape=[self.h_dim, 3])
-        self.logits = tf.matmul(self.hstar, self.W_pred)
-        
-        if self.bidirectional:
-            with tf.variable_scope("BidirectionalEncoder") as scope:
-                ((encoder_fw_outputs,
-                encoder_bw_outputs),
-                (encoder_fw_state,
-                encoder_bw_state)) = (
-                    tf.nn.bidirectional_dynamic_rnn(cell_fw=self.encoder_cell,
-                                                    cell_bw=self.encoder_cell,
-                                                    inputs=self.encoder_inputs_embedded,
-                                                    sequence_length=self.encoder_inputs_length,
-                                                    time_major=True,
-                                                    dtype=tf.float32)
-                    )
-
-                self.encoder_outputs = tf.concat((encoder_fw_outputs, encoder_bw_outputs), 2)
-
-                if isinstance(encoder_fw_state, LSTMStateTuple):
-
-                    encoder_state_c = tf.concat(
-                        (encoder_fw_state.c, encoder_bw_state.c), 1, name='bidirectional_concat_c')
-                    encoder_state_h = tf.concat(
-                        (encoder_fw_state.h, encoder_bw_state.h), 1, name='bidirectional_concat_h')
-                    self.encoder_state = LSTMStateTuple(c=encoder_state_c, h=encoder_state_h)
-
-                elif isinstance(encoder_fw_state, tf.Tensor):
-                    self.encoder_state = tf.concat((encoder_fw_state, encoder_bw_state), 1, name='bidirectional_concat')
-        else:
-            with tf.variable_scope("Encoder") as scope:
-                (self.encoder_outputs, self.encoder_state) = (
-                    tf.nn.dynamic_rnn(cell=self.encoder_cell,
-                                    inputs=self.encoder_inputs_embedded,
-                                    sequence_length=self.encoder_inputs_length,
-                                    time_major=True,
-                                    dtype=tf.float32)
-                    )
+        self.decoder_train_length = self.y_length
+        self.decoder_train_targets = self.x
+        print("train_target:", self.decoder_train_targets)
+  
+        with tf.variable_scope("Encoder") as scope:
+            encoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)      
+            (self.encoder_outputs, self.encoder_state) = (
+                tf.nn.dynamic_rnn(cell=encoder_cell,
+                                inputs=self.encoder_inputs_embedded,
+                                sequence_length=self.x_length,
+                                dtype=tf.float32)
+                )
 
 
         with tf.variable_scope("Decoder") as scope:
-            def output_fn(outputs):
-                return tf.contrib.layers.linear(outputs, self.vocab_size, scope=scope)
 
-            if not self.attention:
-                decoder_fn_train = seq2seq.simple_decoder_fn_train(encoder_state=self.encoder_state)
-                decoder_fn_inference = seq2seq.simple_decoder_fn_inference(
-                    output_fn=output_fn,
-                    encoder_state=self.encoder_state,
-                    embeddings=self.embedding_matrix,
-                    start_of_sequence_id=self.EOS,
-                    end_of_sequence_id=self.EOS,
-                    maximum_length=tf.reduce_max(self.encoder_inputs_length) + 3,
-                    num_decoder_symbols=self.vocab_size,
-                )
-            else:
+            decoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)
 
-                # attention_states: size [batch_size, max_time, num_units]
-                attention_states = tf.transpose(self.encoder_outputs, [1, 0, 2])
+            print("self.decoder_train_inputs_embedded:", self.decoder_train_inputs_embedded)
+            print("self.decoder_train_length:", self.decoder_train_length)
+            helper = seq2seq.TrainingHelper(self.decoder_train_inputs_embedded, self.decoder_train_length)
+            # Try schduled training helper. It may increase performance. 
 
-                (attention_keys,
-                attention_values,
-                attention_score_fn,
-                attention_construct_fn) = seq2seq.prepare_attention(
-                    attention_states=attention_states,
-                    attention_option="bahdanau",
-                    num_units=self.decoder_hidden_units,
-                )
-
-                decoder_fn_train = seq2seq.attention_decoder_fn_train(
-                    encoder_state=self.encoder_state,
-                    attention_keys=attention_keys,
-                    attention_values=attention_values,
-                    attention_score_fn=attention_score_fn,
-                    attention_construct_fn=attention_construct_fn,
-                    name='attention_decoder'
-                )
-
-                decoder_fn_inference = seq2seq.attention_decoder_fn_inference(
-                    output_fn=output_fn,
-                    encoder_state=self.encoder_state,
-                    attention_keys=attention_keys,
-                    attention_values=attention_values,
-                    attention_score_fn=attention_score_fn,
-                    attention_construct_fn=attention_construct_fn,
-                    embeddings=self.embedding_matrix,
-                    start_of_sequence_id=self.EOS,
-                    end_of_sequence_id=self.EOS,
-                    maximum_length=tf.reduce_max(self.encoder_inputs_length) + 3,
-                    num_decoder_symbols=self.vocab_size,
-                )
-
-            (self.decoder_outputs_train,
-             self.decoder_state_train,
-             self.decoder_context_state_train) = (
-                seq2seq.dynamic_rnn_decoder(
-                    cell=self.decoder_cell,
-                    decoder_fn=decoder_fn_train,
-                    inputs=self.decoder_train_inputs_embedded,
-                    sequence_length=self.decoder_train_length,
-                    time_major=True,
+            decoder = seq2seq.BasicDecoder(
+                cell=decoder_cell,
+                helper=helper,
+                initial_state=self.encoder_state
+            )
+            # Try AttentionDecoder.
+            self.decoder_outputs_train, self.decoder_state_train = seq2seq.dynamic_decode(
+                    decoder, 
+                    impute_finished=True,
                     scope=scope,
                 )
-            )
 
-            self.decoder_logits_train = output_fn(self.decoder_outputs_train)
-            self.decoder_prediction_train = tf.argmax(self.decoder_logits_train, axis=-1, name='decoder_prediction_train')
+            print("shape of self.decoder_outputs_train.rnn_output", self.decoder_outputs_train.rnn_output)
+            self.decoder_logits = self.decoder_outputs_train.rnn_output      
 
-            scope.reuse_variables()
+            w_t = tf.get_variable("proj_w", [self.vocab_size, self.h_dim], dtype=tf.float32)
+            w = tf.transpose(w_t)
+            b = tf.get_variable("proj_b", [self.vocab_size], dtype=tf.float32)
+            self.output_projection = (w, b)      
+            
+            m = tf.matmul(tf.reshape(self.decoder_logits, [-1, self.h_dim]), w)
+            print("m:", m)
 
-            (self.decoder_logits_inference,
-             self.decoder_state_inference,
-             self.decoder_context_state_inference) = (
-                seq2seq.dynamic_rnn_decoder(
-                    cell=self.decoder_cell,
-                    decoder_fn=decoder_fn_inference,
-                    time_major=True,
-                    scope=scope,
-                )
-            )
-            self.decoder_prediction_inference = tf.argmax(self.decoder_logits_inference, axis=-1, name='decoder_prediction_inference')
+
+            self.decoder_prediction_train = tf.argmax(
+                tf.reshape(m, [N, -1, self.vocab_size]) + self.output_projection[1],
+                axis=-1, 
+                name='decoder_prediction_train')
         
     def _build_loss(self):
         config = self.config
-        JX = tf.shape(self.x)[1] # max number of word in sentence
+        
+        
+
+        def sampled_loss(labels, inputs):
+            labels = tf.reshape(labels, [-1, 1])
+            # We need to compute the sampled_softmax_loss using 32bit floats to
+            # avoid numerical instabilities.
+            local_w_t = tf.cast(tf.transpose(self.output_projection[0]), tf.float32)
+            local_b = tf.cast(self.output_projection[1], tf.float32)
+            local_inputs = tf.cast(inputs, tf.float32)
+            return tf.cast(
+                tf.nn.sampled_softmax_loss(
+                    weights=local_w_t,
+                    biases=local_b,
+                    labels=labels,
+                    inputs=local_inputs,
+                    num_sampled=self.vocab_size // 10,
+                    num_classes=self.vocab_size),
+                tf.float32)
 
         
-        logits = tf.transpose(self.decoder_logits_train, [1, 0, 2])
-        targets = tf.transpose(self.decoder_train_targets, [1, 0])
-        self.loss = seq2seq.sequence_loss(logits=logits, targets=targets,
-                                          weights=self.loss_weights, name='loss')
+        self.loss = seq2seq.sequence_loss(
+            logits=self.decoder_logits,
+            targets=self.decoder_train_targets,
+            weights=tf.sequence_mask(self.x_length, tf.shape(self.x)[1], dtype=tf.float32, name='masks'),
+            softmax_loss_function = sampled_loss,
+            name='loss'
+            )
         tf.summary.scalar(self.loss.op.name, self.loss)
         tf.add_to_collection('ema/scalar', self.loss)
 
@@ -376,6 +258,8 @@ class Model(object):
             config.word_vocab_size, config.char_vocab_size, config.hidden_size, config.max_word_size
         feed_dict = {}
 
+        # Assume that we are using auto-encoder style, encoder decoder. input is the same as the output.
+
         if config.len_opt:
             """
             Note that this optimization results in variable GPU RAM usage (i.e. can cause OOM in the middle of training.)
@@ -386,28 +270,34 @@ class Model(object):
             else:
                 new_JX = max(len(sent) for sent in batch.data['x_list'])
 
-            if sum(len(ques) for ques in batch.data['y_list']) == 0:
-                new_JY = 1
-            else:
-                new_JY = max(len(ques) for ques in batch.data['y_list'])
+            JX = min(JX, max(new_JX))
+        # +1 for start of sentence "EOS" symbol
+        x = np.zeros([N, JX+1], dtype='int32')
+        cx = np.zeros([N, JX+1, W], dtype='int32')        
+        x_mask = np.zeros([N, JX+1], dtype='bool')
+        x_length = np.zeros([N], dtype='int32')
 
-            JX = min(JX, max(new_JX, new_JY))
 
-        x = np.zeros([N, JX], dtype='int32')
-        cx = np.zeros([N, JX, W], dtype='int32')
-        x_mask = np.zeros([N, JX], dtype='bool')
-        y = np.zeros([N, JX], dtype='int32')
-        cy = np.zeros([N, JX, W], dtype='int32')
-        y_mask = np.zeros([N, JX], dtype='bool')
-        z = np.zeros([N, 3], dtype='float32')
-
+        # +2 for start of sentence "GO" and "EOS" symbol
+        y = np.zeros([N, JX+1], dtype='int32')
+        cy = np.zeros([N, JX+1, W], dtype='int32')
+        y_mask = np.zeros([N, JX+1], dtype='bool')
+        y_length = np.zeros([N], dtype='int32')
+        
+        
         feed_dict[self.x] = x
-        feed_dict[self.x_mask] = x_mask
         feed_dict[self.cx] = cx
+        feed_dict[self.x_mask] = x_mask
+        feed_dict[self.x_length] = x_length
+        
+        
         feed_dict[self.y] = y
         feed_dict[self.cy] = cy
         feed_dict[self.y_mask] = y_mask
-        feed_dict[self.z] = z
+        feed_dict[self.y_length] = y_length
+
+
+
 
         feed_dict[self.is_train] = is_train
         if config.use_glove_for_unk:
@@ -416,12 +306,10 @@ class Model(object):
         X = batch.data['x_list']
         CX = batch.data['cx_list']
 
-        Z = batch.data['z_list']
-        for i, zi in enumerate(Z):
-            z[i] = zi
-        
-
         def _get_word(word):
+            """
+            return index of the word from the preprocessed dictionary. 
+            """
             d = batch.shared['word2idx']
             for each in (word, word.lower(), word.capitalize(), word.upper()):
                 if each in d:
@@ -438,9 +326,12 @@ class Model(object):
             if char in d:
                 return d[char]
             return 1
+
+
         
         # replace char data to index. 
-
+        EOS = _get_word("-EOS-")
+        PAD = _get_word("-NULL-")
         for i, xi in enumerate(X):
             for j, xij in enumerate(xi):
                 if j == config.max_sent_size:
@@ -449,6 +340,16 @@ class Model(object):
                 assert isinstance(each, int), each
                 x[i, j] = each
                 x_mask[i, j] = True
+            x[i, len(xi)] = EOS
+            x_mask[i, len(xi)] = True
+            x_length[i] = len(xi)+1
+
+            y[i] = np.concatenate(([_get_word("-GO-")], x[i, 0:JX]))
+            for idx in range(x_length[i], JX+1):
+                y[i, idx] = PAD
+            y_length[i] = JX+1
+            y_mask[i] = x_mask[i]
+
 
         for i, cxi in enumerate(CX):
             for j, cxij in enumerate(cxi):
@@ -458,24 +359,6 @@ class Model(object):
                     if k == config.max_word_size:
                         break
                     cx[i, j, k] = _get_char(cxijk)
-
-        for i, qi in enumerate(batch.data['y_list']):
-            for j, qij in enumerate(qi):
-                if j == config.max_sent_size:
-                    break
-                y[i, j] = _get_word(qij)
-                y_mask[i, j] = True
-
-        for i, cqi in enumerate(batch.data['cy_list']):
-            for j, cqij in enumerate(cqi):
-                if j == config.max_sent_size:
-                    break
-                for k, cqijk in enumerate(cqij):
-                    if k == config.max_word_size:
-                        break
-                    cy[i, j, k] = _get_char(cqijk)
-                    if k + 1 == config.max_word_size:
-                        break
-
+          
 
         return feed_dict
