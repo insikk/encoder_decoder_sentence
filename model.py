@@ -44,8 +44,8 @@ class Model(object):
             config.word_vocab_size, config.char_vocab_size, config.max_word_size
 
 
-        self.vocab_size = config.word_vocab_size
-        print("vocab size:", config.word_vocab_size)
+        self.vocab_size = config.total_word_vocab_size
+        print("vocab size:", config.total_word_vocab_size)
 
         # Encoder input
         self.x = tf.placeholder('int32', [N, None], name='x')
@@ -316,6 +316,7 @@ class Model(object):
                 each = _get_word(xij)
                 assert isinstance(each, int), each
                 x[i, j] = each
+                print(each)
                 x_mask[i, j] = True
             x_length[i] = len(xi)
 
@@ -346,8 +347,5 @@ class Model(object):
                     cy[i, j, k] = _get_char(cqijk)
                     if k + 1 == config.max_word_size:
                         break
-
-
-        print(x, y)
 
         return feed_dict

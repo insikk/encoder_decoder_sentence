@@ -273,3 +273,5 @@ def update_config(config, data_sets):
     config.char_vocab_size = len(data_sets[0].shared['char2idx'])
     config.word_emb_size = len(next(iter(data_sets[0].shared['word2vec'].values())))
     config.word_vocab_size = len(data_sets[0].shared['word2idx'])
+    config.total_word_vocab_size = len(data_sets[0].shared['new_emb_mat'])
+    print("config.total_word_vocab_size", config.total_word_vocab_size)
