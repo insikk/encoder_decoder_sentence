@@ -100,20 +100,14 @@ class MultiGPUTrainer(object):
         feed_dict = {}
         for batch, model in zip(batches, self.models):
             _, ds = batch
-            feed_dict.update(model.get_feed_dict(ds, True))
+            feed_dict.update(model.get_feed_dict(ds, True))        
 
+        
         if get_summary:
             loss, summary, train_op = \
                 sess.run([self.loss, self.summary, self.train_op], feed_dict=feed_dict)
         else:
-            x = feed_dict[self.model.x][0]
-            x_mask = feed_dict[self.model.x_mask][0]
-            y = feed_dict[self.model.y][0]  
-            loss, train_op, pred_args = sess.run([self.loss, self.train_op, self.model.decoder_prediction_train], feed_dict=feed_dict)            
-            pred = pred_args[0]
-            for idx, m in enumerate(x_mask):
-                if not m:
-                    pred[idx] = 0
-
+            loss, train_op = sess.run([self.loss, self.train_op], feed_dict=feed_dict)            
+            
             summary = None
-        return loss, summary, train_op, x, y, pred
+        return loss, summary, train_op

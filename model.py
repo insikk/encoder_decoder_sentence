@@ -5,8 +5,9 @@ import numpy as np
 
 import tensorflow as tf
 import tensorflow.contrib.seq2seq as seq2seq
-from tensorflow.contrib.rnn import BasicLSTMCell
+from tensorflow.contrib.rnn import LSTMCell
 from tensorflow.python.ops.rnn import dynamic_rnn
+from tensorflow.python.layers.core import Dense
 
 from mytensorflow import get_initializer
 from rnn import get_last_relevant_rnn_output, get_sequence_length
@@ -42,7 +43,7 @@ class Model(object):
 
 
         self.vocab_size = config.total_word_vocab_size
-        print("vocab size:", config.total_word_vocab_size)
+        print("In model vocab size:", config.total_word_vocab_size)
 
         # Encoder input
         self.x = tf.placeholder('int32', [N, None], name='x')
@@ -136,7 +137,7 @@ class Model(object):
         print("train_target:", self.decoder_train_targets)
   
         with tf.variable_scope("Encoder") as scope:
-            encoder_cell = BasicLSTMCell(self.h_dim, state_is_tuple=True)      
+            encoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)      
             (self.encoder_outputs, self.encoder_state) = (
                 tf.nn.dynamic_rnn(cell=encoder_cell,
                                 inputs=self.encoder_inputs_embedded,
@@ -147,7 +148,7 @@ class Model(object):
 
         with tf.variable_scope("Decoder") as scope:
 
-            decoder_cell = BasicLSTMCell(self.h_dim, state_is_tuple=True)
+            decoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)
 
             print("self.decoder_train_inputs_embedded:", self.decoder_train_inputs_embedded)
             print("self.decoder_train_length:", self.decoder_train_length)
@@ -161,23 +162,56 @@ class Model(object):
             )
             # Try AttentionDecoder.
             self.decoder_outputs_train, self.decoder_state_train = seq2seq.dynamic_decode(
-                    decoder, scope=scope,
+                    decoder, 
+                    impute_finished=True,
+                    scope=scope,
                 )
 
-            def output_fn(outputs):
-                return tf.contrib.layers.linear(outputs, self.vocab_size, scope=scope)
             print("shape of self.decoder_outputs_train.rnn_output", self.decoder_outputs_train.rnn_output)
-            self.decoder_logits_train = output_fn(self.decoder_outputs_train.rnn_output)
-            self.decoder_prediction_train = tf.argmax(self.decoder_logits_train, axis=-1, name='decoder_prediction_train')
+            self.decoder_logits = self.decoder_outputs_train.rnn_output      
+
+            w_t = tf.get_variable("proj_w", [self.vocab_size, self.h_dim], dtype=tf.float32)
+            w = tf.transpose(w_t)
+            b = tf.get_variable("proj_b", [self.vocab_size], dtype=tf.float32)
+            self.output_projection = (w, b)      
+            
+            m = tf.matmul(tf.reshape(self.decoder_logits, [-1, self.h_dim]), w)
+            print("m:", m)
+
+
+            self.decoder_prediction_train = tf.argmax(
+                tf.reshape(m, [N, -1, self.vocab_size]) + self.output_projection[1],
+                axis=-1, 
+                name='decoder_prediction_train')
         
     def _build_loss(self):
         config = self.config
         
-        # Try tf.nn.sampled_softmax_loss if the softmax is too large.         
+        
+
+        def sampled_loss(labels, inputs):
+            labels = tf.reshape(labels, [-1, 1])
+            # We need to compute the sampled_softmax_loss using 32bit floats to
+            # avoid numerical instabilities.
+            local_w_t = tf.cast(tf.transpose(self.output_projection[0]), tf.float32)
+            local_b = tf.cast(self.output_projection[1], tf.float32)
+            local_inputs = tf.cast(inputs, tf.float32)
+            return tf.cast(
+                tf.nn.sampled_softmax_loss(
+                    weights=local_w_t,
+                    biases=local_b,
+                    labels=labels,
+                    inputs=local_inputs,
+                    num_sampled=self.vocab_size // 10,
+                    num_classes=self.vocab_size),
+                tf.float32)
+
+        
         self.loss = seq2seq.sequence_loss(
-            logits=self.decoder_logits_train,
+            logits=self.decoder_logits,
             targets=self.decoder_train_targets,
-            weights=tf.cast(self.x_mask, tf.float32),
+            weights=tf.sequence_mask(self.x_length, tf.shape(self.x)[1], dtype=tf.float32, name='masks'),
+            softmax_loss_function = sampled_loss,
             name='loss'
             )
         tf.summary.scalar(self.loss.op.name, self.loss)
@@ -245,9 +279,9 @@ class Model(object):
 
 
         # +2 for start of sentence "GO" and "EOS" symbol
-        y = np.zeros([N, JX+2], dtype='int32')
-        cy = np.zeros([N, JX+2, W], dtype='int32')
-        y_mask = np.zeros([N, JX+2], dtype='bool')
+        y = np.zeros([N, JX+1], dtype='int32')
+        cy = np.zeros([N, JX+1, W], dtype='int32')
+        y_mask = np.zeros([N, JX+1], dtype='bool')
         y_length = np.zeros([N], dtype='int32')
         
         
@@ -307,13 +341,14 @@ class Model(object):
                 x[i, j] = each
                 x_mask[i, j] = True
             x[i, len(xi)] = EOS
+            x_mask[i, len(xi)] = True
             x_length[i] = len(xi)+1
 
-            y[i] = np.concatenate(([_get_word("-GO-")], x[i]))
-            for idx in range(x_length[i]+1, JX+2):
+            y[i] = np.concatenate(([_get_word("-GO-")], x[i, 0:JX]))
+            for idx in range(x_length[i], JX+1):
                 y[i, idx] = PAD
             y_length[i] = JX+1
-            y_mask = np.concatenate(([True], x_mask[i]))
+            y_mask[i] = x_mask[i]
 
 
         for i, cxi in enumerate(CX):

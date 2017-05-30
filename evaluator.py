@@ -9,18 +9,16 @@ def argmax(x):
     return np.unravel_index(x.argmax(), x.shape)
 
 class Evaluation(object):
-    def __init__(self, data_type, global_step, idxs, yp, tensor_dict=None):
+    def __init__(self, data_type, global_step, idxs, loss, tensor_dict=None):
         self.data_type = data_type
         self.global_step = global_step
         self.idxs = idxs
-        self.yp = yp
-        self.num_examples = len(yp)
+        self.loss = loss
         self.tensor_dict = None
         self.dict = {'data_type': data_type,
                      'global_step': global_step,
-                     'yp': yp,
-                     'idxs': idxs,
-                     'num_examples': self.num_examples}
+                     'loss': loss,
+                     'idxs': idxs}
         if tensor_dict is not None:
             self.tensor_dict = {key: val.tolist() for key, val in tensor_dict.items()}
             for key, val in self.tensor_dict.items():
@@ -35,12 +33,12 @@ class Evaluation(object):
             return self
         assert self.data_type == other.data_type
         assert self.global_step == other.global_step
-        new_yp = self.yp + other.yp
         new_idxs = self.idxs + other.idxs
         new_tensor_dict = None
         if self.tensor_dict is not None:
             new_tensor_dict = {key: val + other.tensor_dict[key] for key, val in self.tensor_dict.items()}
-        return Evaluation(self.data_type, self.global_step, new_idxs, new_yp, tensor_dict=new_tensor_dict)
+        loss = (self.loss + other.loss) / 2
+        return Evaluation(self.data_type, self.global_step, new_idxs, loss, tensor_dict=new_tensor_dict)
 
     def __radd__(self, other):
         return self.__add__(other)
@@ -50,17 +48,15 @@ class Evaluator(object):
         self.config = config
         self.model = model
         self.global_step = model.global_step
-        self.logits = model.logits
         self.tensor_dict = {} if tensor_dict is None else tensor_dict
 
     def get_evaluation(self, sess, batch):
         idxs, data_set = self._split_batch(batch)
         assert isinstance(data_set, DataSet)
         feed_dict = self.model.get_feed_dict(data_set, False, supervised=False)
-        global_step, logits, vals = sess.run([self.global_step, self.logits, list(self.tensor_dict.values())], feed_dict=feed_dict)
-        logits = logits[:data_set.num_examples]
+        global_step, loss, vals = sess.run([self.global_step, self.model.loss, list(self.tensor_dict.values())], feed_dict=feed_dict) 
         tensor_dict = dict(zip(self.tensor_dict.keys(), vals))
-        e = Evaluation(data_set.data_type, int(global_step), idxs, logits.tolist(), tensor_dict=tensor_dict)
+        e = Evaluation(data_set.data_type, int(global_step), idxs, loss, tensor_dict=tensor_dict)
         return e
 
     def get_evaluation_from_batches(self, sess, batches):

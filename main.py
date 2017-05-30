@@ -34,7 +34,8 @@ flags = tf.app.flags
 
 
 # Names and directories
-flags.DEFINE_string("data_dir", "../data/snli_simple", "Data dir [../data/snli_simple]")
+# flags.DEFINE_string("data_dir", "../data/snli_simple", "Data dir [../data/snli_simple]")
+flags.DEFINE_string("data_dir", "tiny", "Data dir [../data/snli_simple]") # sanity check with tiny dataset.
 flags.DEFINE_string("model_name", "basic", "Model name [basic]")
 flags.DEFINE_string("run_id", "0", "Run ID [0]")
 flags.DEFINE_string("out_base_dir", "out", "out base dir [out]")
@@ -92,7 +93,7 @@ flags.DEFINE_bool("cpu_opt", False, "CPU optimization? GPU computation can be sl
 # Logging and saving options
 flags.DEFINE_boolean("progress", True, "Show progress? [True]")
 flags.DEFINE_integer("log_period", 100, "Log period [100]")
-flags.DEFINE_integer("eval_period", 1000, "Eval period [1000]")
+flags.DEFINE_integer("eval_period", 100, "Eval period [1000]")
 flags.DEFINE_integer("save_period", 1000, "Save Period [1000]")
 flags.DEFINE_integer("max_to_keep", 20, "Max recent saves to keep [20]")
 flags.DEFINE_bool("dump_eval", True, "dump eval? [True]")
@@ -174,6 +175,7 @@ def main(_):
 
 
 def _train(config):
+    np.set_printoptions(threshold=np.inf)
     train_data = read_data(config, 'train', config.load)
     dev_data = read_data(config, 'dev', True)
     update_config(config, [train_data, dev_data])
@@ -208,7 +210,8 @@ def _train(config):
 
     idx2word = make_idx2word()
     # Save total number of words used in this dictionary: words in GloVe + etc tokens(including UNK, POS, ... etc)
-    print("size of config.word_vocab_size:", config.word_vocab_size)
+    print("size of config.id2word len:", len(idx2word))
+    print("size of config.total_word_vocab_size:", config.total_word_vocab_size)
 
 
     # construct model graph and variables (using default graph)
@@ -236,23 +239,7 @@ def _train(config):
                                                      num_steps=num_steps, shuffle=True, cluster=config.cluster), total=num_steps):
         global_step = sess.run(model.global_step) + 1  # +1 because all calculations are done after step
         get_summary = global_step % config.log_period == 0
-        loss, summary, train_op, x, y, pred = trainer.step(sess, batches, get_summary=get_summary)
-        print("x:", x)
-        for yi in list(x):
-            print(idx2word[yi], end=' ')
-        print()
-        print("y:", y)
-        for yi in list(y):
-            print(idx2word[yi], end=' ')
-        print()
-        print("pred:", pred)
-        for yi in list(pred):
-            print(idx2word[yi], end=' ')
-        print()
-        
-        
-        print("train loss:", loss)
-        print()
+        loss, summary, train_op = trainer.step(sess, batches, get_summary=get_summary)        
         if get_summary:
             graph_handler.add_summary(summary, global_step)
 
@@ -284,12 +271,11 @@ def _train(config):
             e_dev = evaluator.get_evaluation_from_batches(
                 sess, tqdm(dev_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps), total=num_steps))
             graph_handler.add_summaries(e_dev.summaries, global_step)
-            print("%s e_train: acc=%.2f loss=%.4f" % (header, e_train.acc, e_train.loss))
-            print("%s e_dev: acc=%.2f loss=%.4f" % (header, e_dev.acc, e_dev.loss))
+            print("%s e_train: loss=%.4f" % (header, e_train.loss))
+            print("%s e_dev: loss=%.4f" % (header, e_dev.loss))
             print()
-            if min_val['acc'] < e_dev.acc:
+            if min_val['loss'] > e_dev.loss:
                 min_val['loss'] = e_dev.loss
-                min_val['acc'] = e_dev.acc
                 min_val['step'] = global_step
                 min_val['patience'] = 0
             else:
@@ -298,7 +284,7 @@ def _train(config):
                     slack.notify(text="%s patience reached %d. early stopping." % (header, min_val['patience']))
                     break
 
-            slack.notify(text="%s e_dev: acc=%.2f loss=%.4f" % (header, e_dev.acc, e_dev.loss))
+            slack.notify(text="%s e_dev: loss=%.4f" % (header, e_dev.loss))
 
             if config.dump_eval:
                 graph_handler.dump_eval(e_dev)
@@ -307,7 +293,7 @@ def _train(config):
         
         
     
-    slack.notify(text="%s <@U024BE7LH|insikk> Train is finished. e_dev: acc=%.2f loss=%.4f at step=%d\nPlease assign another task to get more research result" % (header, min_val['acc'], min_val['loss'], min_val['step']))    
+    slack.notify(text="%s <@U024BE7LH|insikk> Train is finished. e_dev: loss=%.4f at step=%d\nPlease assign another task to get more research result" % (header, min_val['loss'], min_val['step']))    
      
     if global_step % config.save_period != 0:
         graph_handler.save(sess, global_step=global_step)

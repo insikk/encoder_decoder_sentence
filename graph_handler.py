@@ -54,6 +54,8 @@ class GraphHandler(object):
         self.writer.add_summary(summary, global_step)
 
     def add_summaries(self, summaries, global_step):
+        if summaries is None:
+            return
         for summary in summaries:
             self.add_summary(summary, global_step)
 
