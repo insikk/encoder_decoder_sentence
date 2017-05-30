@@ -188,6 +188,9 @@ def _train(config):
                         for idx in range(config.word_vocab_size)])
     config.emb_mat = emb_mat
 
+    # Save total number of words used in this dictionary: words in GloVe + etc tokens(including UNK, POS, ... etc)
+    print("size of config.emb_bat:", emb_mat.shape)
+
     # construct model graph and variables (using default graph)
     pprint(config.__flags, indent=2)
     models = get_multi_gpu_models(config)
