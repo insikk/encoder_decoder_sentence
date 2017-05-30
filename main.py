@@ -34,8 +34,8 @@ flags = tf.app.flags
 
 
 # Names and directories
-# flags.DEFINE_string("data_dir", "../data/snli_simple", "Data dir [../data/snli_simple]")
-flags.DEFINE_string("data_dir", "tiny", "Data dir [../data/snli_simple]") # sanity check with tiny dataset.
+flags.DEFINE_string("data_dir", "../data/snli_simple", "Data dir [../data/snli_simple]")
+# flags.DEFINE_string("data_dir", "tiny", "Data dir [../data/snli_simple]") # sanity check with tiny dataset.
 flags.DEFINE_string("model_name", "basic", "Model name [basic]")
 flags.DEFINE_string("run_id", "0", "Run ID [0]")
 flags.DEFINE_string("out_base_dir", "out", "out base dir [out]")
@@ -62,7 +62,7 @@ flags.DEFINE_float("th", 0.5, "Threshold [0.5]")
 
 
 # Training / test parameters
-flags.DEFINE_integer("batch_size", 1, "Batch size [1000]")
+flags.DEFINE_integer("batch_size", 2000, "Batch size [1000]")
 flags.DEFINE_integer("val_num_batches", 0, "validation num batches [0]. "+ \
     "Use non-zero value to run evaluation on subset of the validation set.")
 flags.DEFINE_integer("test_num_batches", 0, "test num batches [0]")
@@ -198,20 +198,16 @@ def _train(config):
         idx2word = {}
         d = train_data.shared['word2idx']
         for word, idx in d.items():
-            print(word)
             idx2word[idx] = word
         if config.use_glove_for_unk:
             d2 = train_data.shared['new_word2idx']
             for word, idx in d2.items():
-                print(word)
                 idx2word[idx+len(d)] = word
         return idx2word
 
-
-    idx2word = make_idx2word()
     # Save total number of words used in this dictionary: words in GloVe + etc tokens(including UNK, POS, ... etc)
-    print("size of config.id2word len:", len(idx2word))
-    print("size of config.total_word_vocab_size:", config.total_word_vocab_size)
+    idx2word = make_idx2word()
+    
 
 
     # construct model graph and variables (using default graph)
