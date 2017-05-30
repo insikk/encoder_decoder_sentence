@@ -421,7 +421,12 @@ class Model(object):
             z[i] = zi
         
 
+        print("number of words in glove dict:", len(batch.shared['word2idx']))
+
         def _get_word(word):
+            """
+            return index of the word from the preprocessed dictionary. 
+            """
             d = batch.shared['word2idx']
             for each in (word, word.lower(), word.capitalize(), word.upper()):
                 if each in d:
