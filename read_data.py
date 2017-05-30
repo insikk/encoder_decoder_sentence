@@ -216,10 +216,13 @@ def read_data(config, data_type, word2vec_ref, data_filter=None):
                                         if count > config.char_count_th)}
         NULL = "-NULL-"
         UNK = "-UNK-"
+        EOS = "-EOS-"
         shared['word2idx'][NULL] = 0
         shared['word2idx'][UNK] = 1
+        shared['word2idx'][EOS] = 2
         shared['char2idx'][NULL] = 0
         shared['char2idx'][UNK] = 1
+        shared['word2idx'][EOS] = 2
         if not os.path.exists(os.path.dirname(shared_path)):
             import errno
             try:

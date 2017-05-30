@@ -61,7 +61,7 @@ flags.DEFINE_float("th", 0.5, "Threshold [0.5]")
 
 
 # Training / test parameters
-flags.DEFINE_integer("batch_size", 1000, "Batch size [1000]")
+flags.DEFINE_integer("batch_size", 5, "Batch size [1000]")
 flags.DEFINE_integer("val_num_batches", 0, "validation num batches [0]. "+ \
     "Use non-zero value to run evaluation on subset of the validation set.")
 flags.DEFINE_integer("test_num_batches", 0, "test num batches [0]")
@@ -78,7 +78,7 @@ flags.DEFINE_integer("char_emb_size", 8, "Char emb size [8]")
 flags.DEFINE_string("out_channel_dims", "100", "Out channel dims of Char-CNN, separated by commas [100]")
 flags.DEFINE_string("filter_heights", "5", "Filter heights of Char-CNN, separated by commas [5]")
 flags.DEFINE_bool("finetune", False, "Finetune word embeddings? [False]")
-flags.DEFINE_bool("highway", True, "Use highway? [True]")
+flags.DEFINE_bool("highway", False, "Use highway? [True]")
 flags.DEFINE_integer("highway_num_layers", 2, "highway num layers [2]")
 flags.DEFINE_bool("share_cnn_weights", True, "Share Char-CNN weights [True]")
 flags.DEFINE_bool("share_lstm_weights", True, "Share pre-processing (phrase-level) LSTM weights [True]")
@@ -119,7 +119,7 @@ flags.DEFINE_string("answer_func", "linear", "answer logit func [linear]")
 flags.DEFINE_string("sh_logit_func", "tri_linear", "sh logit func [tri_linear]")
 
 # Ablation options
-flags.DEFINE_bool("use_char_emb", True, "use char emb? [True]")
+flags.DEFINE_bool("use_char_emb", False, "use char emb? [True]")
 flags.DEFINE_bool("use_word_emb", True, "use word embedding? [True]")
 flags.DEFINE_bool("q2c_att", True, "question-to-context attention? [True]")
 flags.DEFINE_bool("c2q_att", True, "context-to-question attention? [True]")
