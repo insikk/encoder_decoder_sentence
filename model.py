@@ -29,9 +29,6 @@ def get_multi_gpu_models(config):
 class Model(object):
 
     # this index definition should be consistent with its definition of index in read_data.py's read_data() function.
-    PAD = 0
-    EOS = 2
-
 
     def __init__(self, config, scope, rep=True):
         self.scope = scope
@@ -44,8 +41,8 @@ class Model(object):
             config.word_vocab_size, config.char_vocab_size, config.max_word_size
 
 
-        self.vocab_size = config.word_vocab_size
-        print("vocab size:", config.word_vocab_size)
+        self.vocab_size = config.total_word_vocab_size
+        print("vocab size:", config.total_word_vocab_size)
 
         # Encoder input
         self.x = tf.placeholder('int32', [N, None], name='x')
@@ -95,6 +92,7 @@ class Model(object):
         dc, dw, dco = config.char_emb_size, config.word_emb_size, config.char_out_size        
 
 
+
         # Getting word vector. For now, we only care about word_emb. Forget about char_emb.         
         with tf.variable_scope("emb"):
             if config.use_word_emb:
@@ -130,11 +128,10 @@ class Model(object):
         self.tensor_dict['xx'] = xx
         self.tensor_dict['yy'] = yy
 
-
-
         self.encoder_inputs_embedded = xx
-        self.decoder_train_inputs_embedded = xx
-        self.decoder_train_length = self.x_length
+
+        self.decoder_train_inputs_embedded = yy
+        self.decoder_train_length = self.y_length
         self.decoder_train_targets = self.x
         print("train_target:", self.decoder_train_targets)
   
@@ -169,19 +166,14 @@ class Model(object):
 
             def output_fn(outputs):
                 return tf.contrib.layers.linear(outputs, self.vocab_size, scope=scope)
+            print("shape of self.decoder_outputs_train.rnn_output", self.decoder_outputs_train.rnn_output)
             self.decoder_logits_train = output_fn(self.decoder_outputs_train.rnn_output)
             self.decoder_prediction_train = tf.argmax(self.decoder_logits_train, axis=-1, name='decoder_prediction_train')
         
     def _build_loss(self):
         config = self.config
-        JX = tf.shape(self.x)[1] # max number of word in sentence
-        print()
-        print("self.decoder_logits_train:", self.decoder_logits_train)
-        print("self.decoder_train_targets:", self.decoder_train_targets)
-        print("self.x_mask:", self.x_mask)
-        print()
         
-        # Try tf.nn.sampled_softmax_loss if the softmax is too large. 
+        # Try tf.nn.sampled_softmax_loss if the softmax is too large.         
         self.loss = seq2seq.sequence_loss(
             logits=self.decoder_logits_train,
             targets=self.decoder_train_targets,
@@ -232,6 +224,8 @@ class Model(object):
             config.word_vocab_size, config.char_vocab_size, config.hidden_size, config.max_word_size
         feed_dict = {}
 
+        # Assume that we are using auto-encoder style, encoder decoder. input is the same as the output.
+
         if config.len_opt:
             """
             Note that this optimization results in variable GPU RAM usage (i.e. can cause OOM in the middle of training.)
@@ -242,22 +236,18 @@ class Model(object):
             else:
                 new_JX = max(len(sent) for sent in batch.data['x_list'])
 
-            if sum(len(ques) for ques in batch.data['y_list']) == 0:
-                new_JY = 1
-            else:
-                new_JY = max(len(ques) for ques in batch.data['y_list'])
-
-            JX = min(JX, max(new_JX, new_JY))
-
-        x = np.zeros([N, JX], dtype='int32')
-        cx = np.zeros([N, JX, W], dtype='int32')        
-        x_mask = np.zeros([N, JX], dtype='bool')
+            JX = min(JX, max(new_JX))
+        # +1 for start of sentence "EOS" symbol
+        x = np.zeros([N, JX+1], dtype='int32')
+        cx = np.zeros([N, JX+1, W], dtype='int32')        
+        x_mask = np.zeros([N, JX+1], dtype='bool')
         x_length = np.zeros([N], dtype='int32')
 
 
-        y = np.zeros([N, JX], dtype='int32')
-        cy = np.zeros([N, JX, W], dtype='int32')
-        y_mask = np.zeros([N, JX], dtype='bool')
+        # +2 for start of sentence "GO" and "EOS" symbol
+        y = np.zeros([N, JX+2], dtype='int32')
+        cy = np.zeros([N, JX+2, W], dtype='int32')
+        y_mask = np.zeros([N, JX+2], dtype='bool')
         y_length = np.zeros([N], dtype='int32')
         
         
@@ -282,10 +272,6 @@ class Model(object):
         X = batch.data['x_list']
         CX = batch.data['cx_list']
 
-        print("vocab size:", len(batch.shared['word2idx']))
-
-        print("number of words in glove dict:", len(batch.shared['word2idx']))
-
         def _get_word(word):
             """
             return index of the word from the preprocessed dictionary. 
@@ -306,9 +292,12 @@ class Model(object):
             if char in d:
                 return d[char]
             return 1
+
+
         
         # replace char data to index. 
-
+        EOS = _get_word("-EOS-")
+        PAD = _get_word("-NULL-")
         for i, xi in enumerate(X):
             for j, xij in enumerate(xi):
                 if j == config.max_sent_size:
@@ -317,7 +306,15 @@ class Model(object):
                 assert isinstance(each, int), each
                 x[i, j] = each
                 x_mask[i, j] = True
-            x_length[i] = len(xi)
+            x[i, len(xi)] = EOS
+            x_length[i] = len(xi)+1
+
+            y[i] = np.concatenate(([_get_word("-GO-")], x[i]))
+            for idx in range(x_length[i]+1, JX+2):
+                y[i, idx] = PAD
+            y_length[i] = JX+1
+            y_mask = np.concatenate(([True], x_mask[i]))
+
 
         for i, cxi in enumerate(CX):
             for j, cxij in enumerate(cxi):
@@ -327,27 +324,6 @@ class Model(object):
                     if k == config.max_word_size:
                         break
                     cx[i, j, k] = _get_char(cxijk)
-                    
-        for i, qi in enumerate(batch.data['y_list']):
-            for j, qij in enumerate(qi):
-                if j == config.max_sent_size:
-                    break
-                y[i, j] = _get_word(qij)
-                y_mask[i, j] = True
-            y_length[i] = len(qi)
-
-        for i, cqi in enumerate(batch.data['cy_list']):
-            for j, cqij in enumerate(cqi):
-                if j == config.max_sent_size:
-                    break
-                for k, cqijk in enumerate(cqij):
-                    if k == config.max_word_size:
-                        break
-                    cy[i, j, k] = _get_char(cqijk)
-                    if k + 1 == config.max_word_size:
-                        break
-
-
-        print(x, y)
+          
 
         return feed_dict

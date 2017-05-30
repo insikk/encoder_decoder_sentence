@@ -217,12 +217,15 @@ def read_data(config, data_type, word2vec_ref, data_filter=None):
         NULL = "-NULL-"
         UNK = "-UNK-"
         EOS = "-EOS-"
+        PAD = "-GO-"
         shared['word2idx'][NULL] = 0
         shared['word2idx'][UNK] = 1
         shared['word2idx'][EOS] = 2
+        shared['word2idx'][PAD] = 3
         shared['char2idx'][NULL] = 0
         shared['char2idx'][UNK] = 1
         shared['word2idx'][EOS] = 2
+        shared['word2idx'][PAD] = 3
         if not os.path.exists(os.path.dirname(shared_path)):
             import errno
             try:
@@ -273,3 +276,5 @@ def update_config(config, data_sets):
     config.char_vocab_size = len(data_sets[0].shared['char2idx'])
     config.word_emb_size = len(next(iter(data_sets[0].shared['word2vec'].values())))
     config.word_vocab_size = len(data_sets[0].shared['word2idx'])
+    config.total_word_vocab_size = len(data_sets[0].shared['new_emb_mat'])
+    print("config.total_word_vocab_size", config.total_word_vocab_size)

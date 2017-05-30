@@ -92,7 +92,8 @@ class MultiGPUTrainer(object):
 
         self.loss = tf.add_n(losses)/len(losses)
         self.grads = average_gradients(grads_list)
-        self.train_op = self.opt.apply_gradients(self.grads, global_step=self.global_step)
+        self.capped_gradients = [(tf.clip_by_value(grad, -5., 5.), var) for grad, var in grads if grad is not None]
+        self.train_op = self.opt.apply_gradients(self.capped_gradients, global_step=self.global_step)
 
     def step(self, sess, batches, get_summary=False):
         assert isinstance(sess, tf.Session)
@@ -105,6 +106,14 @@ class MultiGPUTrainer(object):
             loss, summary, train_op = \
                 sess.run([self.loss, self.summary, self.train_op], feed_dict=feed_dict)
         else:
-            loss, train_op = sess.run([self.loss, self.train_op], feed_dict=feed_dict)
+            x = feed_dict[self.model.x][0]
+            x_mask = feed_dict[self.model.x_mask][0]
+            y = feed_dict[self.model.y][0]  
+            loss, train_op, pred_args = sess.run([self.loss, self.train_op, self.model.decoder_prediction_train], feed_dict=feed_dict)            
+            pred = pred_args[0]
+            for idx, m in enumerate(x_mask):
+                if not m:
+                    pred[idx] = 0
+
             summary = None
-        return loss, summary, train_op
+        return loss, summary, train_op, x, y, pred

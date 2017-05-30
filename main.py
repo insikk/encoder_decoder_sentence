@@ -26,7 +26,7 @@ from pprint import pprint
 import slackweb
 # slack web hook for notifying training progress log. 
 slack = slackweb.Slack(url=os.environ['TRAINING_SLACK_NOTI_URL'])
-header= "snli" # description for this training. 
+header= "encoder_decoder_simple" # description for this training. 
  
 
 
@@ -61,7 +61,7 @@ flags.DEFINE_float("th", 0.5, "Threshold [0.5]")
 
 
 # Training / test parameters
-flags.DEFINE_integer("batch_size", 5, "Batch size [1000]")
+flags.DEFINE_integer("batch_size", 1, "Batch size [1000]")
 flags.DEFINE_integer("val_num_batches", 0, "validation num batches [0]. "+ \
     "Use non-zero value to run evaluation on subset of the validation set.")
 flags.DEFINE_integer("test_num_batches", 0, "test num batches [0]")
@@ -188,8 +188,28 @@ def _train(config):
                         for idx in range(config.word_vocab_size)])
     config.emb_mat = emb_mat
 
+
+    def make_idx2word():
+        """
+        return index of the word from the preprocessed dictionary. 
+        """
+        idx2word = {}
+        d = train_data.shared['word2idx']
+        for word, idx in d.items():
+            print(word)
+            idx2word[idx] = word
+        if config.use_glove_for_unk:
+            d2 = train_data.shared['new_word2idx']
+            for word, idx in d2.items():
+                print(word)
+                idx2word[idx+len(d)] = word
+        return idx2word
+
+
+    idx2word = make_idx2word()
     # Save total number of words used in this dictionary: words in GloVe + etc tokens(including UNK, POS, ... etc)
-    print("size of config.emb_bat:", emb_mat.shape)
+    print("size of config.word_vocab_size:", config.word_vocab_size)
+
 
     # construct model graph and variables (using default graph)
     pprint(config.__flags, indent=2)
@@ -216,8 +236,23 @@ def _train(config):
                                                      num_steps=num_steps, shuffle=True, cluster=config.cluster), total=num_steps):
         global_step = sess.run(model.global_step) + 1  # +1 because all calculations are done after step
         get_summary = global_step % config.log_period == 0
-        loss, summary, train_op = trainer.step(sess, batches, get_summary=get_summary)
+        loss, summary, train_op, x, y, pred = trainer.step(sess, batches, get_summary=get_summary)
+        print("x:", x)
+        for yi in list(x):
+            print(idx2word[yi], end=' ')
+        print()
+        print("y:", y)
+        for yi in list(y):
+            print(idx2word[yi], end=' ')
+        print()
+        print("pred:", pred)
+        for yi in list(pred):
+            print(idx2word[yi], end=' ')
+        print()
+        
+        
         print("train loss:", loss)
+        print()
         if get_summary:
             graph_handler.add_summary(summary, global_step)
 
@@ -269,6 +304,8 @@ def _train(config):
                 graph_handler.dump_eval(e_dev)
             if config.dump_answer:
                 graph_handler.dump_answer(e_dev)
+        
+        
     
     slack.notify(text="%s <@U024BE7LH|insikk> Train is finished. e_dev: acc=%.2f loss=%.4f at step=%d\nPlease assign another task to get more research result" % (header, min_val['acc'], min_val['loss'], min_val['step']))    
      
