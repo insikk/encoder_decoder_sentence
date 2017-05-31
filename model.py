@@ -5,8 +5,8 @@ import numpy as np
 
 import tensorflow as tf
 import tensorflow.contrib.seq2seq as seq2seq
-from tensorflow.contrib.rnn import LSTMCell
-from tensorflow.python.ops.rnn import dynamic_rnn
+from tensorflow.contrib.rnn import LSTMCell, DropoutWrapper
+from tensorflow.python.ops.rnn import dynamic_rnn, bidirectional_dynamic_rnn
 from tensorflow.python.layers.core import Dense
 
 from mytensorflow import get_initializer
@@ -137,13 +137,19 @@ class Model(object):
         print("train_target:", self.decoder_train_targets)
   
         with tf.variable_scope("Encoder") as scope:
-            encoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)      
-            (self.encoder_outputs, self.encoder_state) = (
-                tf.nn.dynamic_rnn(cell=encoder_cell,
-                                inputs=self.encoder_inputs_embedded,
-                                sequence_length=self.x_length,
-                                dtype=tf.float32)
-                )
+            # encoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)    
+
+            cell_fw = LSTMCell(self.h_dim, initializer=tf.random_uniform_initializer(-0.1, 0.1, seed=2))
+            cell_fw = DropoutWrapper(cell_fw, input_keep_prob = keep_prob)
+
+            cell_bw = LSTMCell(self.h_dim, initializer=tf.random_uniform_initializer(-0.1, 0.1, seed=2))
+            cell_bw = DropoutWrapper(cell_bw, input_keep_prob = keep_prob)
+
+            (self.encoder_outputs, self.encoder_state) = tf.nn.bidirectional_dynamic_rnn(cell_fw, 
+                                                                    cell_bw, 
+                                                                    inputs=self.encoder_inputs_embedded,
+                                                                    sequence_length=self.x_length,
+                                                                    dtype=tf.float32)
 
 
         with tf.variable_scope("Decoder") as scope:
