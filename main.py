@@ -14,7 +14,7 @@ from trainer import MultiGPUTrainer
 
 from mytensorflow import get_num_params
 
-from read_data import read_data, update_config
+from read_data import read_data, update_config, get_data_filter
 
 import numpy as np
 from collections import Counter, defaultdict
@@ -26,7 +26,7 @@ from pprint import pprint
 import slackweb
 # slack web hook for notifying training progress log. 
 slack = slackweb.Slack(url=os.environ['TRAINING_SLACK_NOTI_URL'])
-header= "encoder_decoder_simple" # description for this training. 
+header= "encoder_decoder_squad_simple" # description for this training. 
  
 
 
@@ -34,7 +34,7 @@ flags = tf.app.flags
 
 
 # Names and directories
-flags.DEFINE_string("data_dir", "../data/snli_simple", "Data dir [../data/snli_simple]")
+flags.DEFINE_string("data_dir", "../data/squad_sentence", "Data dir [../data/squad_sentence]")
 # flags.DEFINE_string("data_dir", "tiny", "Data dir [../data/snli_simple]") # sanity check with tiny dataset.
 flags.DEFINE_string("model_name", "basic", "Model name [basic]")
 flags.DEFINE_string("run_id", "0", "Run ID [0]")
@@ -62,7 +62,7 @@ flags.DEFINE_float("th", 0.5, "Threshold [0.5]")
 
 
 # Training / test parameters
-flags.DEFINE_integer("batch_size", 2000, "Batch size [1000]")
+flags.DEFINE_integer("batch_size", 100, "Batch size [1000]")
 flags.DEFINE_integer("val_num_batches", 0, "validation num batches [0]. "+ \
     "Use non-zero value to run evaluation on subset of the validation set.")
 flags.DEFINE_integer("test_num_batches", 0, "test num batches [0]")
@@ -93,7 +93,7 @@ flags.DEFINE_bool("cpu_opt", False, "CPU optimization? GPU computation can be sl
 # Logging and saving options
 flags.DEFINE_boolean("progress", True, "Show progress? [True]")
 flags.DEFINE_integer("log_period", 100, "Log period [100]")
-flags.DEFINE_integer("eval_period", 100, "Eval period [1000]")
+flags.DEFINE_integer("eval_period", 1000, "Eval period [1000]")
 flags.DEFINE_integer("save_period", 1000, "Save Period [1000]")
 flags.DEFINE_integer("max_to_keep", 20, "Max recent saves to keep [20]")
 flags.DEFINE_bool("dump_eval", True, "dump eval? [True]")
@@ -105,7 +105,7 @@ flags.DEFINE_float("decay", 0.9, "Exponential moving average decay for logging v
 # Thresholds for speed and less memory usage
 flags.DEFINE_integer("word_count_th", 100, "word count th [100]")
 flags.DEFINE_integer("char_count_th", 505, "char count th [500]")
-flags.DEFINE_integer("sent_size_th", 400, "sent size th [64]")
+flags.DEFINE_integer("sent_size_th", 100, "sent size th [64]") # number of words in a sentence.
 flags.DEFINE_integer("word_size_th", 16, "word size th [16]") # what's difference word count and word size?
 
 # Advanced training options
@@ -173,11 +173,12 @@ def main(_):
         else:
             raise ValueError("invalid value for 'mode': {}".format(config.mode))
 
-
 def _train(config):
-    np.set_printoptions(threshold=np.inf)
-    train_data = read_data(config, 'train', config.load)
-    dev_data = read_data(config, 'dev', True)
+    
+    # np.set_printoptions(threshold=np.inf) # uncomment this to see all numpy array
+    data_filter = get_data_filter(config)
+    train_data = read_data(config, 'train', config.load, data_filter=data_filter)
+    dev_data = read_data(config, 'dev', True, data_filter=data_filter)
     update_config(config, [train_data, dev_data])
 
     _config_debug(config)
@@ -257,9 +258,8 @@ def _train(config):
 
             
             # This train loss is calulated from sampling the same number of data size of dev_data. 
-
             e_train = evaluator.get_evaluation_from_batches(
-                sess, tqdm(train_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps), total=num_steps)
+                sess, tqdm(train_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps, shuffle=True), total=num_steps)
             )
             graph_handler.add_summaries(e_train.summaries, global_step)
 
@@ -280,7 +280,7 @@ def _train(config):
                     slack.notify(text="%s patience reached %d. early stopping." % (header, min_val['patience']))
                     break
 
-            slack.notify(text="%s e_dev: loss=%.4f" % (header, e_dev.loss))
+            slack.notify(text="%s @ step=%d e_train: loss=%.4f, e_dev: loss=%.4f" % (header, global_step, e_train.loss, e_dev.loss))
 
             if config.dump_eval:
                 graph_handler.dump_eval(e_dev)

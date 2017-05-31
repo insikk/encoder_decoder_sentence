@@ -21,8 +21,8 @@ def main():
 def get_args():
     parser = argparse.ArgumentParser()
     home = os.path.expanduser("~")
-    source_dir = os.path.join("..", "data", "snli_simple")
-    target_dir = "../data/snli_simple"
+    source_dir = os.path.join("..", "data", "squad_sentence")
+    target_dir = "../data/squad_sentence"
     glove_dir = os.path.join(home, "data", "glove")
     parser.add_argument('-s', "--source_dir", default=source_dir)
     parser.add_argument('-t', "--target_dir", default=target_dir)
@@ -120,8 +120,9 @@ def prepro_each(args, data_type, out_name="default"):
     if not args.split:
         sent_tokenize = lambda para: [para]
 
-    source_path = os.path.join(args.source_dir, "snli_1.0_simple_{}.txt".format(data_type))
+    source_path = os.path.join(args.source_dir, "sentences_all_{}.txt".format(data_type))
     source_data = open(source_path, 'r').readlines()
+    print("processing: ", source_path)
     
     x_list, cx_list = [], []
     y_list, cy_list = [], []
@@ -130,6 +131,9 @@ def prepro_each(args, data_type, out_name="default"):
     word_counter, char_counter, lower_word_counter = Counter(), Counter(), Counter()    
     for pair_index, pair in enumerate(tqdm(source_data)):
         items = pair.strip().split('\t')
+        if len(items) is not 3:
+            print("skip processing this:", pair)
+            continue
         sent1 = items[0]
         sent2 = items[1]
         label = items[2]

@@ -257,6 +257,20 @@ def read_data(config, data_type, word2vec_ref, data_filter=None):
     return data_set
 
 
+def get_data_filter(config):
+    def data_filter(data_point, shared):
+        assert shared is not None
+        
+        x, y = data_point['x_list'], data_point['y_list']       
+
+        # x filter
+        if len(x) > config.sent_size_th:
+            return False
+
+        return True
+    return data_filter
+
+
 def update_config(config, data_sets):
     config.max_sent_size = 0
     config.max_word_size = 0
