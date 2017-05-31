@@ -5,13 +5,14 @@ import numpy as np
 
 import tensorflow as tf
 import tensorflow.contrib.seq2seq as seq2seq
-from tensorflow.contrib.rnn import LSTMCell, DropoutWrapper
+from tensorflow.contrib.rnn import BasicLSTMCell, LSTMCell, LSTMStateTuple
 from tensorflow.python.ops.rnn import dynamic_rnn, bidirectional_dynamic_rnn
 from tensorflow.python.layers.core import Dense
 
 from mytensorflow import get_initializer
 from rnn import get_last_relevant_rnn_output, get_sequence_length
 from nn import multi_conv1d, highway_network
+from rnn_cell import SwitchableDropoutWrapper
 
 from read_data import DataSet
 
@@ -134,30 +135,41 @@ class Model(object):
         self.decoder_train_inputs_embedded = yy
         self.decoder_train_length = self.y_length
         self.decoder_train_targets = self.x
-        print("train_target:", self.decoder_train_targets)
   
         with tf.variable_scope("Encoder") as scope:
             # encoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)    
 
-            cell_fw = LSTMCell(self.h_dim, initializer=tf.random_uniform_initializer(-0.1, 0.1, seed=2))
-            cell_fw = DropoutWrapper(cell_fw, input_keep_prob = keep_prob)
+            cell_fw = BasicLSTMCell(self.h_dim, state_is_tuple=True)
+            cell_fw = SwitchableDropoutWrapper(cell_fw, self.is_train, input_keep_prob = config.input_keep_prob)
 
-            cell_bw = LSTMCell(self.h_dim, initializer=tf.random_uniform_initializer(-0.1, 0.1, seed=2))
-            cell_bw = DropoutWrapper(cell_bw, input_keep_prob = keep_prob)
+            cell_bw = BasicLSTMCell(self.h_dim, state_is_tuple=True)
+            cell_bw = SwitchableDropoutWrapper(cell_bw, self.is_train, input_keep_prob = config.input_keep_prob)
 
             (self.encoder_outputs, self.encoder_state) = tf.nn.bidirectional_dynamic_rnn(cell_fw, 
-                                                                    cell_bw, 
-                                                                    inputs=self.encoder_inputs_embedded,
-                                                                    sequence_length=self.x_length,
-                                                                    dtype=tf.float32)
+                cell_bw, 
+                inputs=self.encoder_inputs_embedded,
+                sequence_length=self.x_length,
+                dtype=tf.float32,
+                scope='enc')
+
+            # Join outputs since we are using a bidirectional RNN
+            self.encoder_outputs = tf.concat(self.encoder_outputs, 2)
+
+            if isinstance(self.encoder_state[0], LSTMStateTuple):
+
+                encoder_state_c = tf.concat(
+                    (self.encoder_state[0].c, self.encoder_state[1].c), 1, name='bidirectional_concat_c')
+                encoder_state_h = tf.concat(
+                    (self.encoder_state[0].h, self.encoder_state[1].h), 1, name='bidirectional_concat_h')
+                self.encoder_state = LSTMStateTuple(c=encoder_state_c, h=encoder_state_h)
+
+            self.decoder_hidden = self.h_dim*2
+
 
 
         with tf.variable_scope("Decoder") as scope:
+            decoder_cell = LSTMCell(self.decoder_hidden, state_is_tuple=True)
 
-            decoder_cell = LSTMCell(self.h_dim, state_is_tuple=True)
-
-            print("self.decoder_train_inputs_embedded:", self.decoder_train_inputs_embedded)
-            print("self.decoder_train_length:", self.decoder_train_length)
             helper = seq2seq.TrainingHelper(self.decoder_train_inputs_embedded, self.decoder_train_length)
             # Try schduled training helper. It may increase performance. 
 
@@ -173,16 +185,14 @@ class Model(object):
                     scope=scope,
                 )
 
-            print("shape of self.decoder_outputs_train.rnn_output", self.decoder_outputs_train.rnn_output)
             self.decoder_logits = self.decoder_outputs_train.rnn_output      
 
-            w_t = tf.get_variable("proj_w", [self.vocab_size, self.h_dim], dtype=tf.float32)
+            w_t = tf.get_variable("proj_w", [self.vocab_size, self.decoder_hidden], dtype=tf.float32)
             w = tf.transpose(w_t)
             b = tf.get_variable("proj_b", [self.vocab_size], dtype=tf.float32)
             self.output_projection = (w, b)      
             
-            m = tf.matmul(tf.reshape(self.decoder_logits, [-1, self.h_dim]), w)
-            print("m:", m)
+            m = tf.matmul(tf.reshape(self.decoder_logits, [-1, self.decoder_hidden]), w)
 
 
             self.decoder_prediction_train = tf.argmax(
@@ -192,8 +202,6 @@ class Model(object):
         
     def _build_loss(self):
         config = self.config
-        
-        
 
         def sampled_loss(labels, inputs):
             labels = tf.reshape(labels, [-1, 1])
